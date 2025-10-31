@@ -1,0 +1,183 @@
+variables:
+  DOCKER_REGISTRY: "your-registry"
+  BACKEND_IMAGE: "${DOCKER_REGISTRY}/backend"
+  FRONTEND_IMAGE: "${DOCKER_REGISTRY}/frontend"
+  DOCKER_DRIVER: overlay2
+  KUBE_NAMESPACE: microservices
+
+stages:
+  - build
+  - test
+  - security
+  - deploy
+  - monitoring
+
+# Build Backend
+build-backend:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $DOCKER_REGISTRY
+  script:
+    - cd backend
+    - docker build -t ${BACKEND_IMAGE}:${CI_COMMIT_SHORT_SHA} .
+    - docker tag ${BACKEND_IMAGE}:${CI_COMMIT_SHORT_SHA} ${BACKEND_IMAGE}:latest
+    - docker push ${BACKEND_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${BACKEND_IMAGE}:latest
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Build Frontend
+build-frontend:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $DOCKER_REGISTRY
+  script:
+    - cd frontend
+    - docker build -t ${FRONTEND_IMAGE}:${CI_COMMIT_SHORT_SHA} .
+    - docker tag ${FRONTEND_IMAGE}:${CI_COMMIT_SHORT_SHA} ${FRONTEND_IMAGE}:latest
+    - docker push ${FRONTEND_IMAGE}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${FRONTEND_IMAGE}:latest
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Test Backend
+test-backend:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - cd backend
+    - pip install -r requirements.txt
+  script:
+    - python -m pytest tests/ -v --cov=app --cov-report=term --cov-report=xml
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: backend/coverage.xml
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Test Frontend
+test-frontend:
+  stage: test
+  image: node:18
+  before_script:
+    - cd frontend
+    - npm ci
+  script:
+    - npm test -- --coverage --watchAll=false
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: frontend/coverage/cobertura-coverage.xml
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Security Scan Backend
+security-scan-backend:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --severity HIGH,CRITICAL --exit-code 0 ${BACKEND_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  allow_failure: true
+  only:
+    - main
+    - develop
+
+# Security Scan Frontend
+security-scan-frontend:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --severity HIGH,CRITICAL --exit-code 0 ${FRONTEND_IMAGE}:${CI_COMMIT_SHORT_SHA}
+  allow_failure: true
+  only:
+    - main
+    - develop
+
+# Deploy to Staging
+deploy-staging:
+  stage: deploy
+  image: alpine/helm:latest
+  before_script:
+    - kubectl config use-context staging
+  script:
+    - |
+      helm upgrade --install microservices-app ./helm/microservices-app \
+        --namespace ${KUBE_NAMESPACE} \
+        --create-namespace \
+        --set backend.image.tag=${CI_COMMIT_SHORT_SHA} \
+        --set frontend.image.tag=${CI_COMMIT_SHORT_SHA} \
+        --set frontend.ingress.host=staging.microservices.example.com \
+        --wait \
+        --timeout 10m
+  environment:
+    name: staging
+    url: https://staging.microservices.example.com
+  only:
+    - develop
+
+# Deploy to Production
+deploy-production:
+  stage: deploy
+  image: alpine/helm:latest
+  before_script:
+    - kubectl config use-context production
+  script:
+    - |
+      helm upgrade --install microservices-app ./helm/microservices-app \
+        --namespace ${KUBE_NAMESPACE} \
+        --create-namespace \
+        --set backend.image.tag=${CI_COMMIT_SHORT_SHA} \
+        --set frontend.image.tag=${CI_COMMIT_SHORT_SHA} \
+        --set frontend.ingress.host=microservices.example.com \
+        --wait \
+        --timeout 10m
+  environment:
+    name: production
+    url: https://microservices.example.com
+  when: manual
+  only:
+    - main
+
+# Smoke Tests
+smoke-tests:
+  stage: monitoring
+  image: curlimages/curl:latest
+  script:
+    - |
+      echo "Running smoke tests..."
+      curl -f https://microservices.example.com/health || exit 1
+      curl -f https://microservices.example.com/api/health || exit 1
+  only:
+    - main
+  when: on_success
+
+# Performance Tests
+performance-tests:
+  stage: monitoring
+  image: grafana/k6:latest
+  script:
+    - k6 run tests/performance/load-test.js
+  artifacts:
+    reports:
+      performance: performance-report.json
+  only:
+    - main
+  when: manual

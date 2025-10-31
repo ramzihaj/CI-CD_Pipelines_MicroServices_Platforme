@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+data:
+  alert-rules.yml: |
+    groups:
+    - name: microservices_alerts
+      interval: 30s
+      rules:
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: rate(container_cpu_usage_seconds_total{namespace="microservices"}[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has CPU usage above 80% for 5 minutes"
+
+      # High Memory usage
+      - alert: HighMemoryUsage
+        expr: container_memory_usage_bytes{namespace="microservices"} / container_spec_memory_limit_bytes{namespace="microservices"} > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has memory usage above 90% for 5 minutes"
+
+      # Pod not ready
+      - alert: PodNotReady
+        expr: kube_pod_status_phase{namespace="microservices", phase!="Running"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pod not ready"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been not ready for 5 minutes"
+
+      # High API error rate
+      - alert: HighAPIErrorRate
+        expr: rate(flask_http_request_duration_seconds_count{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API error rate"
+          description: "API error rate is above 5% for 5 minutes"
+
+      # Database connection failures
+      - alert: DatabaseConnectionFailure
+        expr: up{job="postgres"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection failure"
+          description: "Cannot connect to PostgreSQL database for 2 minutes"
+
+      # Redis connection failures
+      - alert: RedisConnectionFailure
+        expr: up{job="redis"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis connection failure"
+          description: "Cannot connect to Redis cache for 2 minutes"
+
+      # High request latency
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency"
+          description: "95th percentile latency is above 1 second for 5 minutes"
+
+      # Deployment replica mismatch
+      - alert: DeploymentReplicaMismatch
+        expr: kube_deployment_spec_replicas{namespace="microservices"} != kube_deployment_status_replicas_available{namespace="microservices"}
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Deployment replica mismatch"
+          description: "Deployment {{ $labels.deployment }} has mismatched replicas for 10 minutes"

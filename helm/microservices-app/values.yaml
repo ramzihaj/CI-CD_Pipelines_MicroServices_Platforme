@@ -1,0 +1,109 @@
+# Default values for microservices-app
+
+namespace: microservices
+
+# Backend configuration
+backend:
+  name: backend
+  replicaCount: 3
+  image:
+    repository: your-registry/backend
+    tag: latest
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 5000
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  env:
+    FLASK_ENV: "production"
+    REDIS_PORT: "6379"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+# Frontend configuration
+frontend:
+  name: frontend
+  replicaCount: 2
+  image:
+    repository: your-registry/frontend
+    tag: latest
+    pullPolicy: Always
+  service:
+    type: LoadBalancer
+    port: 80
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+  ingress:
+    enabled: true
+    className: nginx
+    host: microservices.example.com
+    tls:
+      enabled: true
+      secretName: frontend-tls
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  name: postgres
+  image:
+    repository: postgres
+    tag: 15-alpine
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  auth:
+    database: microservices
+    username: postgres
+    password: postgres  # Change in production!
+
+# Redis configuration
+redis:
+  enabled: true
+  name: redis
+  image:
+    repository: redis
+    tag: 7-alpine
+  service:
+    port: 6379
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Network policies
+networkPolicies:
+  enabled: true
+
+# Monitoring
+monitoring:
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true

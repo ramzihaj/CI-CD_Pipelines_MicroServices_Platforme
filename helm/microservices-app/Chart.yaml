@@ -1,0 +1,14 @@
+apiVersion: v2
+name: microservices-app
+description: A complete microservices application with Flask backend and React frontend
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - microservices
+  - flask
+  - react
+  - devops
+maintainers:
+  - name: DevOps Team
+    email: devops@example.com

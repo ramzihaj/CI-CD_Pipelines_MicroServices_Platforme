@@ -1,0 +1,168 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = 'your-registry'
+        DOCKER_CREDENTIALS = credentials('docker-hub-credentials')
+        KUBECONFIG = credentials('kubeconfig')
+        BACKEND_IMAGE = "${DOCKER_REGISTRY}/backend"
+        FRONTEND_IMAGE = "${DOCKER_REGISTRY}/frontend"
+        GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.BUILD_TAG = "${GIT_COMMIT_SHORT}-${BUILD_NUMBER}"
+                }
+            }
+        }
+        
+        stage('Build Backend') {
+            steps {
+                dir('backend') {
+                    script {
+                        echo "Building Backend Docker Image..."
+                        sh """
+                            docker build -t ${BACKEND_IMAGE}:${BUILD_TAG} .
+                            docker tag ${BACKEND_IMAGE}:${BUILD_TAG} ${BACKEND_IMAGE}:latest
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Build Frontend') {
+            steps {
+                dir('frontend') {
+                    script {
+                        echo "Building Frontend Docker Image..."
+                        sh """
+                            docker build -t ${FRONTEND_IMAGE}:${BUILD_TAG} .
+                            docker tag ${FRONTEND_IMAGE}:${BUILD_TAG} ${FRONTEND_IMAGE}:latest
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Test Backend') {
+            steps {
+                dir('backend') {
+                    script {
+                        echo "Running Backend Tests..."
+                        sh """
+                            docker run --rm ${BACKEND_IMAGE}:${BUILD_TAG} \
+                                python -m pytest tests/ -v --cov=app --cov-report=xml
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            parallel {
+                stage('Scan Backend') {
+                    steps {
+                        script {
+                            echo "Scanning Backend Image for vulnerabilities..."
+                            sh """
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                                    aquasec/trivy image --severity HIGH,CRITICAL \
+                                    ${BACKEND_IMAGE}:${BUILD_TAG}
+                            """
+                        }
+                    }
+                }
+                stage('Scan Frontend') {
+                    steps {
+                        script {
+                            echo "Scanning Frontend Image for vulnerabilities..."
+                            sh """
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                                    aquasec/trivy image --severity HIGH,CRITICAL \
+                                    ${FRONTEND_IMAGE}:${BUILD_TAG}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Push Images') {
+            steps {
+                script {
+                    echo "Pushing Docker Images to Registry..."
+                    sh """
+                        echo ${DOCKER_CREDENTIALS_PSW} | docker login -u ${DOCKER_CREDENTIALS_USR} --password-stdin
+                        docker push ${BACKEND_IMAGE}:${BUILD_TAG}
+                        docker push ${BACKEND_IMAGE}:latest
+                        docker push ${FRONTEND_IMAGE}:${BUILD_TAG}
+                        docker push ${FRONTEND_IMAGE}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    echo "Deploying to Kubernetes..."
+                    sh """
+                        export KUBECONFIG=${KUBECONFIG}
+                        
+                        # Update image tags in Helm values
+                        helm upgrade --install microservices-app ./helm/microservices-app \
+                            --namespace microservices \
+                            --create-namespace \
+                            --set backend.image.tag=${BUILD_TAG} \
+                            --set frontend.image.tag=${BUILD_TAG} \
+                            --wait \
+                            --timeout 10m
+                    """
+                }
+            }
+        }
+        
+        stage('Smoke Tests') {
+            steps {
+                script {
+                    echo "Running Smoke Tests..."
+                    sh """
+                        # Wait for deployment to be ready
+                        kubectl wait --for=condition=available --timeout=300s \
+                            deployment/backend -n microservices
+                        kubectl wait --for=condition=available --timeout=300s \
+                            deployment/frontend -n microservices
+                        
+                        # Run smoke tests
+                        BACKEND_URL=\$(kubectl get svc backend-service -n microservices -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                        curl -f http://\${BACKEND_URL}:5000/api/health || exit 1
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "✅ Pipeline completed successfully!"
+            slackSend(
+                color: 'good',
+                message: "✅ Deployment successful: ${env.JOB_NAME} #${env.BUILD_NUMBER} (<${env.BUILD_URL}|Open>)"
+            )
+        }
+        failure {
+            echo "❌ Pipeline failed!"
+            slackSend(
+                color: 'danger',
+                message: "❌ Deployment failed: ${env.JOB_NAME} #${env.BUILD_NUMBER} (<${env.BUILD_URL}|Open>)"
+            )
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
