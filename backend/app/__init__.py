@@ -45,6 +45,10 @@ def create_app():
         print(f"⚠️  Redis connection failed: {e}")
         redis_client = None
     
+    # Initialize security middleware
+    from app.middleware import init_security_middleware
+    init_security_middleware(app)
+    
     # Register blueprints
     from app.routes import api_bp
     app.register_blueprint(api_bp, url_prefix='/api')

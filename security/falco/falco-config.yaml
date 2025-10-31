@@ -1,0 +1,235 @@
+# Falco - Runtime Security pour Kubernetes
+# Détection des comportements anormaux en temps réel
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: falco
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-config
+  namespace: falco
+data:
+  falco.yaml: |
+    rules_file:
+      - /etc/falco/falco_rules.yaml
+      - /etc/falco/falco_rules.local.yaml
+      - /etc/falco/k8s_audit_rules.yaml
+      - /etc/falco/rules.d
+    
+    json_output: true
+    json_include_output_property: true
+    log_stderr: true
+    log_syslog: true
+    log_level: info
+    priority: debug
+    
+    # Outputs
+    file_output:
+      enabled: true
+      keep_alive: false
+      filename: /var/log/falco/events.txt
+    
+    stdout_output:
+      enabled: true
+    
+    syslog_output:
+      enabled: false
+    
+    http_output:
+      enabled: false
+      url: "http://webhook-service:8080/"
+    
+    # Alertes personnalisées
+    program_output:
+      enabled: false
+      keep_alive: false
+      program: "jq '{text: .output}' | curl -d @- -X POST https://hooks.slack.com/services/XXX"
+
+  custom_rules.yaml: |
+    # Règles personnalisées pour microservices
+    
+    - rule: Unauthorized Process in Container
+      desc: Détecte l'exécution de processus non autorisés
+      condition: >
+        spawned_process and
+        container and
+        not proc.name in (python, gunicorn, node, nginx, postgres, redis-server)
+      output: >
+        Processus non autorisé détecté
+        (user=%user.name command=%proc.cmdline container=%container.name image=%container.image.repository)
+      priority: WARNING
+      tags: [container, process]
+    
+    - rule: Sensitive File Read
+      desc: Lecture de fichiers sensibles
+      condition: >
+        open_read and
+        container and
+        fd.name in (/etc/shadow, /etc/passwd, /root/.ssh/id_rsa)
+      output: >
+        Lecture de fichier sensible détectée
+        (user=%user.name file=%fd.name container=%container.name)
+      priority: CRITICAL
+      tags: [filesystem, credentials]
+    
+    - rule: Outbound Connection to Suspicious IP
+      desc: Connexion sortante vers une IP suspecte
+      condition: >
+        outbound and
+        container and
+        not fd.sip in (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+      output: >
+        Connexion sortante suspecte
+        (user=%user.name connection=%fd.name container=%container.name)
+      priority: WARNING
+      tags: [network]
+    
+    - rule: Write to Non-Writable Directory
+      desc: Tentative d'écriture dans un répertoire protégé
+      condition: >
+        open_write and
+        container and
+        fd.name startswith /usr
+      output: >
+        Tentative d'écriture non autorisée
+        (user=%user.name file=%fd.name container=%container.name)
+      priority: ERROR
+      tags: [filesystem]
+    
+    - rule: Privilege Escalation Attempt
+      desc: Tentative d'escalade de privilèges
+      condition: >
+        spawned_process and
+        container and
+        proc.name in (sudo, su, chroot)
+      output: >
+        Tentative d'escalade de privilèges
+        (user=%user.name command=%proc.cmdline container=%container.name)
+      priority: CRITICAL
+      tags: [privilege_escalation]
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: falco
+  namespace: falco
+  labels:
+    app: falco
+spec:
+  selector:
+    matchLabels:
+      app: falco
+  template:
+    metadata:
+      labels:
+        app: falco
+    spec:
+      serviceAccountName: falco
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: falco
+        image: falcosecurity/falco:latest
+        securityContext:
+          privileged: true
+        args:
+          - /usr/bin/falco
+          - --cri
+          - /run/containerd/containerd.sock
+          - -K
+          - /var/run/secrets/kubernetes.io/serviceaccount/token
+          - -k
+          - https://kubernetes.default
+          - -pk
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+        - name: containerd-socket
+          mountPath: /run/containerd/containerd.sock
+        - name: dev-fs
+          mountPath: /host/dev
+        - name: proc-fs
+          mountPath: /host/proc
+          readOnly: true
+        - name: boot-fs
+          mountPath: /host/boot
+          readOnly: true
+        - name: lib-modules
+          mountPath: /host/lib/modules
+          readOnly: true
+        - name: usr-fs
+          mountPath: /host/usr
+          readOnly: true
+        - name: etc-fs
+          mountPath: /host/etc
+          readOnly: true
+        - name: config
+          mountPath: /etc/falco
+      volumes:
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+      - name: containerd-socket
+        hostPath:
+          path: /run/containerd/containerd.sock
+      - name: dev-fs
+        hostPath:
+          path: /dev
+      - name: proc-fs
+        hostPath:
+          path: /proc
+      - name: boot-fs
+        hostPath:
+          path: /boot
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      - name: usr-fs
+        hostPath:
+          path: /usr
+      - name: etc-fs
+        hostPath:
+          path: /etc
+      - name: config
+        configMap:
+          name: falco-config
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: falco
+  namespace: falco
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: falco
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "namespaces", "pods", "events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: falco
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: falco
+subjects:
+- kind: ServiceAccount
+  name: falco
+  namespace: falco

@@ -91,3 +91,10 @@ secrets/
 *.pem
 *.key
 *.crt
+*-secrets-generated.yaml
+app-secrets.yaml
+
+# Security sensitive files
+*.kubeconfig
+*-sealed-secret.yaml
+.sealed-secrets-key
